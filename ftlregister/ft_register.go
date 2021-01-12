@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 
 	"github.com/dati-mipt/distributed-systems/network"
 	"github.com/dati-mipt/distributed-systems/util"
@@ -29,48 +30,32 @@ func NewFaultTolerantRegister(rid int64) *FaultTolerantRegister {
 // WRITE = {read + write}
 
 func (ftr *FaultTolerantRegister) Write(value int64) bool {
-	currVal := BlockingMessageToQuorum(ftr, nil)
+	currVal := DecideByQuorum(ftr, nil)
 	currVal.Val = value
 	currVal.Ts.Number = ftr.current.Ts.Number + 1
 	currVal.Ts.Rid = ftr.rid
 
 	ftr.current = currVal
-	BlockingMessageToQuorum(ftr, value)
+	DecideByQuorum(ftr, value)
 
 	return true
 }
 
 func (ftr *FaultTolerantRegister) Read() int64 {
-	currVal := BlockingMessageToQuorum(ftr, nil)
-	BlockingMessageToQuorum(ftr, currVal)
+	currVal := DecideByQuorum(ftr, nil)
+	DecideByQuorum(ftr, currVal)
 
 	return ftr.current.Val
 }
 
-// BlockingMessageToQuorum делает BlockingMessage запрос на все реплики
+// DecideByQuorum рассылает BlockingMessage запрос на все реплики
 // и ждёт ответа от кворума реплик
-func BlockingMessageToQuorum(ftr *FaultTolerantRegister, msg interface{}) util.TimestampedValue {
+func DecideByQuorum(ftr *FaultTolerantRegister, msg interface{}) util.TimestampedValue {
 	messages := make(chan util.TimestampedValue, len(ftr.replicas))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	for i, rep := range ftr.replicas {
-		go func(i *int64, rep *network.Link) {
-			// Send возвращает канал, передающий интерфейс
-			message, ok := (<-((*rep).Send(ctx, msg))).(util.TimestampedValue)
-			if ok {
-				select {
-					case <-ctx.Done():
-						return
-					case messages <- message:
-				}
-			} else {
-				fmt.Println(fmt.Errorf("Returned value from the %d-th replica is not TimestampValue", i).Error())
-			}
-		}(&i, &rep)
-	}
-	close(messages)
+	ftr.BlockingMessageToQuorum(ctx, msg, &messages)
 
 	majority := int(math.Ceil(float64(len(ftr.replicas) / 2)))
 	var counter = 0
@@ -89,6 +74,34 @@ func BlockingMessageToQuorum(ftr *FaultTolerantRegister, msg interface{}) util.T
 	}
 
 	return newTsV
+}
+
+// BlockingMessageToQuorum рассылает BlockingMessage запрос на все реплики
+func (ftr *FaultTolerantRegister) BlockingMessageToQuorum(ctx context.Context, msg interface{}, messages *chan util.TimestampedValue) (){
+	// Глобальный семафор
+	var wg sync.WaitGroup
+	for i, rep := range ftr.replicas {
+		wg.Add(1)
+
+		go func(i *int64, rep *network.Link) {
+			// Send возвращает канал, передающий интерфейс
+			message, ok := (<-((*rep).Send(ctx, msg))).(util.TimestampedValue)
+			if ok {
+				select {
+					case <-ctx.Done():
+						return
+					case *messages <- message:
+				}
+			} else {
+				fmt.Println(fmt.Errorf("Returned value from the %d-th replica is not TimestampValue", i).Error())
+			}
+
+			wg.Done()
+		}(&i, &rep)
+	}
+
+	wg.Wait()
+	close(*messages)
 }
 
 // Introduce устанавливает links между репликами
