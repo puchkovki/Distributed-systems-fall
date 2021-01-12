@@ -60,13 +60,17 @@ func BlockingMessageToQuorum(ftr *FaultTolerantRegister, msg interface{}) util.T
 			// Send возвращает канал, передающий интерфейс
 			message, ok := (<-((*rep).Send(ctx, msg))).(util.TimestampedValue)
 			if ok {
-				messages <- message
+				select {
+					case <-ctx.Done():
+						return
+					case messages <- message:
+				}
 			} else {
 				fmt.Println(fmt.Errorf("Returned value from the %d-th replica is not TimestampValue", i).Error())
 			}
 		}(&i, &rep)
 	}
-	// close(messages)
+	close(messages)
 
 	majority := int(math.Ceil(float64(len(ftr.replicas) / 2)))
 	var counter = 0
@@ -83,6 +87,7 @@ func BlockingMessageToQuorum(ftr *FaultTolerantRegister, msg interface{}) util.T
 		}
 
 	}
+
 	return newTsV
 }
 
