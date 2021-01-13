@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"fmt"
 
 	"github.com/dati-mipt/distributed-systems/network"
 )
@@ -120,6 +121,7 @@ func TestFaultTolerantRegisterRealtime(t *testing.T) {
 			regs[rand.Int() % clusterSize].Write(val)
 		}
 		if regs[rand.Int() % clusterSize].Read() != val {
+			fmt.Printf("Read %d but must be %b", regs[rand.Int() % clusterSize].Read(), val)
 			t.Errorf("wrong read value")
 			return
 		}

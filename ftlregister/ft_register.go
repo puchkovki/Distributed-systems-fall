@@ -31,31 +31,36 @@ func NewFaultTolerantRegister(rid int64) *FaultTolerantRegister {
 
 func (ftr *FaultTolerantRegister) Write(value int64) bool {
 	currVal := DecideByQuorum(ftr, nil)
+	fmt.Println("Read current value ", currVal.Val)
+
 	currVal.Val = value
 	currVal.Ts.Number = ftr.current.Ts.Number + 1
 	currVal.Ts.Rid = ftr.rid
-
 	ftr.current = currVal
 	DecideByQuorum(ftr, value)
+	fmt.Println("Write value ", value)
 
 	return true
 }
 
 func (ftr *FaultTolerantRegister) Read() int64 {
 	currVal := DecideByQuorum(ftr, nil)
+	fmt.Println("Read current value ", currVal.Val)
+	currVal.Ts.Rid = ftr.rid
 	DecideByQuorum(ftr, currVal)
+	fmt.Println("Write value ", currVal.Val)
 
 	return ftr.current.Val
 }
 
 // DecideByQuorum рассылает BlockingMessage запрос на все реплики
-// и ждёт ответа от кворума реплик
+// и получает консенсус от кворума реплик
 func DecideByQuorum(ftr *FaultTolerantRegister, msg interface{}) util.TimestampedValue {
 	messages := make(chan util.TimestampedValue, len(ftr.replicas))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ftr.BlockingMessageToQuorum(ctx, msg, &messages)
+	go ftr.BlockingMessageToQuorum(ctx, msg, &messages)
 
 	majority := int(math.Ceil(float64(len(ftr.replicas) / 2)))
 	var counter = 0
@@ -77,7 +82,7 @@ func DecideByQuorum(ftr *FaultTolerantRegister, msg interface{}) util.Timestampe
 }
 
 // BlockingMessageToQuorum рассылает BlockingMessage запрос на все реплики
-func (ftr *FaultTolerantRegister) BlockingMessageToQuorum(ctx context.Context, msg interface{}, messages *chan util.TimestampedValue) (){
+func (ftr *FaultTolerantRegister) BlockingMessageToQuorum(ctx context.Context, msg interface{}, messages *chan util.TimestampedValue) {
 	// Глобальный семафор
 	var wg sync.WaitGroup
 	for i, rep := range ftr.replicas {
@@ -88,9 +93,9 @@ func (ftr *FaultTolerantRegister) BlockingMessageToQuorum(ctx context.Context, m
 			message, ok := (<-((*rep).Send(ctx, msg))).(util.TimestampedValue)
 			if ok {
 				select {
-					case <-ctx.Done():
-						return
-					case *messages <- message:
+				case <-ctx.Done():
+					return
+				case *messages <- message:
 				}
 			} else {
 				fmt.Println(fmt.Errorf("Returned value from the %d-th replica is not TimestampValue", i).Error())
